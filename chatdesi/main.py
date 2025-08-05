@@ -7,14 +7,13 @@ import os
 
 try:
     import streamlit as st
-    from openai import OpenAI
     STREAMLIT_AVAILABLE = True
 except ImportError:
     STREAMLIT_AVAILABLE = False
 
 # Handle both relative and absolute imports
 try:
-    from .auth import create_auth_system, require_authentication
+    # We no longer need the old authentication system
     from .auth.api_key_manager import APIKeyManager, SimpleModelClient
     from .data import DatabaseFactory, PDFManager, ADQLManager
     from .ui import ChatInterface, ADQLInterface, UIComponents
@@ -22,7 +21,6 @@ try:
     from .config import settings
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from chatdesi.auth import create_auth_system, require_authentication
     from chatdesi.auth.api_key_manager import APIKeyManager, SimpleModelClient
     from chatdesi.data import DatabaseFactory, PDFManager, ADQLManager
     from chatdesi.ui import ChatInterface, ADQLInterface, UIComponents
@@ -42,21 +40,22 @@ def main():
         layout="wide"
     )
     
-    # Step 1: MongoDB Authentication
-    auth_system = create_auth_system()
-    credentials = require_authentication(auth_system)
+    # --- NEW: Step 1: Get MongoDB credentials from Streamlit Secrets ---
+    try:
+        mongo_user = st.secrets["mongo_username"]
+        mongo_pass = st.secrets["mongo_password"]
+    except KeyError:
+        st.error("MongoDB credentials not found in Streamlit Secrets.")
+        st.info("Please create a `.streamlit/secrets.toml` file with your `mongo_username` and `mongo_password`.")
+        st.stop()
     
-    if not credentials:
-        return
-    
-    # Step 2: API Key Testing and Model Selection
+    # Step 2: API Key Input and Validation
     api_key_manager = APIKeyManager()
     api_keys = api_key_manager.get_user_api_keys()
     
-    # Always include stored OpenAI key as fallback
-    if "openai" not in api_keys:
-        api_keys["openai"] = credentials.openai_api_key
-        st.info("ℹ️ Using stored OpenAI API key from encrypted credentials.")
+    if not api_keys:
+        st.warning("Please enter at least one valid API key to proceed.")
+        st.stop()
     
     # Get available models and let user choose
     available_models = api_key_manager.get_available_models(api_keys)
@@ -67,11 +66,11 @@ def main():
     
     # Step 3: Initialize Services
     try:
-        # Database connection
+        # --- UPDATED: Database connection using credentials from Secrets ---
         with st.spinner("Connecting to database..."):
-            db_manager = DatabaseFactory.create_from_auth(credentials)
+            db_manager = DatabaseFactory.create_from_credentials(mongo_user, mongo_pass)
             if not db_manager.test_connection():
-                st.error("❌ Unable to connect to MongoDB")
+                st.error("❌ Unable to connect to MongoDB. Check credentials in secrets.toml.")
                 return
             st.success("✅ Connected to MongoDB")
         
@@ -89,8 +88,8 @@ def main():
         pdf_manager = PDFManager(db_manager)
         adql_manager = ADQLManager(db_manager)
         
-        # Render main interface
-        render_main_interface(pdf_manager, adql_manager, ai_client, auth_system)
+        # --- UPDATED: Render main interface without auth_system ---
+        render_main_interface(pdf_manager, adql_manager, ai_client)
         
     except Exception as e:
         st.error(f"❌ Application error: {e}")
@@ -100,7 +99,7 @@ def main():
 
 
 @PerformanceMonitor.time_function()
-def render_main_interface(pdf_manager, adql_manager, ai_client, auth_system):
+def render_main_interface(pdf_manager, adql_manager, ai_client):
     """Render the main interface with performance monitoring."""
     
     col_left, col_right = st.columns([4, 1])
@@ -117,8 +116,7 @@ def render_main_interface(pdf_manager, adql_manager, ai_client, auth_system):
         st.sidebar.write("### ⚡ Performance")
         st.sidebar.caption("Function timing appears below")
         
-        if st.sidebar.button("Logout"):
-            auth_system.logout()
+        # --- REMOVED: Logout button is no longer needed ---
     
     with col_left:
         # Create enhanced interfaces
@@ -146,7 +144,7 @@ class PracticalChatInterface(ChatInterface):
     
     def __init__(self, pdf_manager, ai_client):
         self.pdf_manager = pdf_manager
-        self.ai_client = ai_client  # SimpleModelClient instead of OpenAI client
+        self.ai_client = ai_client
         from .ui.components import UIComponents, MathRenderer, SessionManager
         self.ui = UIComponents()
         self.renderer = MathRenderer()
@@ -157,34 +155,30 @@ class PracticalChatInterface(ChatInterface):
     def _generate_chat_response(self, user_input, relevant_docs, token_limit, temp_val):
         """Generate chat response using universal client."""
         
-        # Build context from relevant documents
         context = ""
         if relevant_docs:
             context_snippets = "\n\n".join([doc["text"] for doc in relevant_docs[:3]])
             context = f"Relevant document context:\n\n{context_snippets}"
         
-        # Build messages with token limiting
         messages = []
         if context:
             messages.append({"role": "system", "content": context})
         
-        # Add conversation history (last few exchanges)
         max_history_tokens = 800
         token_count = len(context) // 4
         
-        chat_history = st.session_state["history"][::-1]  # Latest first
+        chat_history = st.session_state["history"][::-1]
         history_trimmed = []
         
         for entry in chat_history:
             est_tokens = len(entry["content"]) // 4
             if token_count + est_tokens > max_history_tokens:
                 break
-            history_trimmed.insert(0, entry)  # Maintain order
+            history_trimmed.insert(0, entry)
             token_count += est_tokens
         
         messages.extend(history_trimmed)
         
-        # Use the universal client
         return self.ai_client.chat_completion(
             messages=messages,
             max_tokens=token_limit,
@@ -241,7 +235,6 @@ class PracticalADQLGenerator:
     def generate_adql_query(self, user_input, available_columns, conversation_history=None, temperature=None, max_tokens=None):
         """Generate ADQL query using universal client."""
         
-        # Build system prompt
         system_prompt = (
             "You are a helpful assistant that converts natural language queries into ADQL "
             "(Astronomical Data Query Language). Return only the SQL query inside a code block "
@@ -254,10 +247,8 @@ class PracticalADQLGenerator:
             f"Available columns: {available_columns}"
         )
         
-        # Build messages
         messages = [{"role": "system", "content": system_prompt}]
         
-        # Add few-shot examples from database
         rl_context = self.adql_manager.find_similar_adql_queries(user_input, top_k=3)
         if rl_context["positive"]:
             pos_examples = "\n\n".join([
@@ -269,20 +260,17 @@ class PracticalADQLGenerator:
                 "content": f"Here are good ADQL examples:\n\n{pos_examples}"
             })
         
-        # Add recent conversation history
         if conversation_history:
-            messages.extend(conversation_history[-4:])  # Last 4 exchanges
+            messages.extend(conversation_history[-4:])
         
         messages.append({"role": "user", "content": user_input})
         
-        # Generate using universal client
         response = self.ai_client.chat_completion(
             messages=messages,
             max_tokens=max_tokens or settings.model.default_token_limit,
             temperature=temperature or settings.model.default_temperature
         )
         
-        # Extract SQL from response
         import re
         match = re.search(r"```sql\s*(.*?)\s*```", response, re.DOTALL)
         return match.group(1).strip() if match else response.strip()
