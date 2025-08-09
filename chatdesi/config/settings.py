@@ -83,13 +83,6 @@ class Settings:
         self.ui = UIConfig()
         self.external = ExternalConfig()
     
-    def get_mongodb_connection_string(self, username: str, password: str) -> str:
-        """Generate MongoDB connection string."""
-        return (
-            f"mongodb+srv://{username}:{password}@{self.database.cluster_url}/"
-            f"?appName={self.database.app_name}&tls=true"
-        )
-    
     def get_tap_query_url(self, query: str, max_records: int) -> str:
         """Generate TAP service query URL."""
         formatted_query = query.replace(' ', '+')

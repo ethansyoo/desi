@@ -2,10 +2,12 @@
 Database connection and management for chatDESI.
 """
 
+import certifi
 from typing import Optional
 from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.database import Database
+from pymongo.errors import ConnectionFailure
 
 from ..config import settings
 
@@ -13,9 +15,8 @@ from ..config import settings
 class DatabaseManager:
     """Manages MongoDB connections for chatDESI."""
     
-    def __init__(self, username: str, password: str):
-        self.username = username
-        self.password = password
+    def __init__(self, connection_string: str):
+        self.connection_string = connection_string
         self._client: Optional[MongoClient] = None
         self._pdf_db: Optional[Database] = None
         self._adql_db: Optional[Database] = None
@@ -23,10 +24,12 @@ class DatabaseManager:
     def _get_client(self) -> MongoClient:
         """Get or create MongoDB client."""
         if self._client is None:
-            connection_string = settings.get_mongodb_connection_string(
-                self.username, self.password
+            # NEW: Add tlsCAFile=certifi.where() to use the certifi library
+            self._client = MongoClient(
+                self.connection_string,
+                serverSelectionTimeoutMS=60000,
+                tlsCAFile=certifi.where()
             )
-            self._client = MongoClient(connection_string)
         return self._client
     
     def get_pdf_collection(self) -> Collection:
@@ -46,13 +49,20 @@ class DatabaseManager:
         return self._adql_db[settings.database.adql_collection_name]
     
     def test_connection(self) -> bool:
-        """Test if database connection is working."""
+        """Test if database connection is working with detailed error logging."""
         try:
             client = self._get_client()
-            # Ping the database
             client.admin.command('ping')
             return True
-        except Exception:
+        except ConnectionFailure as e:
+            import streamlit as st
+            st.error("MongoDB ConnectionFailure: A detailed error occurred.")
+            st.exception(e)
+            return False
+        except Exception as e:
+            import streamlit as st
+            st.error("An unexpected error occurred during the database connection test.")
+            st.exception(e)
             return False
     
     def close_connection(self):
@@ -68,14 +78,6 @@ class DatabaseFactory:
     """Factory for creating database managers."""
     
     @staticmethod
-    def create_from_credentials(username: str, password: str) -> DatabaseManager:
-        """Create database manager from credentials."""
-        return DatabaseManager(username, password)
-    
-    @staticmethod
-    def create_from_auth(credentials) -> DatabaseManager:
-        """Create database manager from auth credentials object."""
-        return DatabaseManager(
-            credentials.mongo_username,
-            credentials.mongo_password
-        )
+    def create_from_connection_string(connection_string: str) -> DatabaseManager:
+        """Create database manager from a full connection string."""
+        return DatabaseManager(connection_string)
