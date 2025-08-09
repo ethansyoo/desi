@@ -2,24 +2,11 @@
 Authentication module for chatDESI.
 """
 
-from .credentials import (
-    Credentials,
-    CredentialManager, 
-    StreamlitAuth,
-    create_auth_system,
-    require_authentication
-)
+# Import only from the new, existing API key manager
+from .api_key_manager import APIKeyManager, SimpleModelClient
 
-# Import new practical API key manager
-try:
-    from .api_key_manager import APIKeyManager, SimpleModelClient
-    __all__ = [
-        "Credentials", "CredentialManager", "StreamlitAuth", 
-        "create_auth_system", "require_authentication", 
-        "APIKeyManager", "SimpleModelClient"
-    ]
-except ImportError:
-    __all__ = [
-        "Credentials", "CredentialManager", "StreamlitAuth", 
-        "create_auth_system", "require_authentication"
-    ]
+# Expose only the components that are actually in use
+__all__ = [
+    "APIKeyManager",
+    "SimpleModelClient"
+]
