@@ -24,7 +24,9 @@ class DatabaseManager:
     def _get_client(self) -> MongoClient:
         """Get or create MongoDB client."""
         if self._client is None:
-            # NEW: Add tlsCAFile=certifi.where() to use the certifi library
+            # This is the key change: we explicitly point to a trusted
+            # certificate file provided by the certifi library. This
+            # bypasses system-level certificate issues.
             self._client = MongoClient(
                 self.connection_string,
                 serverSelectionTimeoutMS=60000,
