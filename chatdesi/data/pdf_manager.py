@@ -116,40 +116,36 @@ class PDFManager:
     
     def find_relevant_docs(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """
-        Find documents relevant to the query using semantic search.
-        
-        Args:
-            query: Search query text
-            top_k: Number of top results to return
-            
-        Returns:
-            List of relevant documents with similarity scores
+        Find documents relevant to the query using MongoDB Atlas Vector Search.
         """
         top_k = top_k or settings.ui.default_top_k
         
-        # Generate query embedding
-        query_embedding = self.embedding_model.embed_text(query)
+        # Generate the embedding for the user's query
+        query_embedding = self.embedding_model.embed_text(query).tolist()
         
-        # Fetch all stored embeddings
-        documents = list(self.collection.find({"embedding": {"$exists": True}}))
+        # Define the aggregation pipeline for vector search
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "default", # The name of your Atlas Search Index
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": 100, # Number of candidates to consider
+                    "limit": top_k # Number of results to return
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "text": 1,
+                    "metadata": 1,
+                    "similarity": { "$meta": "vectorSearchScore" }
+                }
+            }
+        ]
         
-        if not documents:
-            return []
-        
-        # Compute similarities
-        embeddings = np.array([doc["embedding"] for doc in documents])
-        query_embedding = np.array(query_embedding).reshape(1, -1)
-        similarities = cosine_similarity(query_embedding, embeddings).flatten()
-        
-        # Get top-k most similar documents
-        sorted_indices = similarities.argsort()[::-1][:top_k]
-        
-        relevant_docs = []
-        for i in sorted_indices:
-            doc = documents[i]
-            doc["similarity"] = round(float(similarities[i]), 3)
-            relevant_docs.append(doc)
-        
+        # Execute the search
+        relevant_docs = list(self.collection.aggregate(pipeline))
         return relevant_docs
     
     def highlight_keywords(self, text: str, query: str) -> str:

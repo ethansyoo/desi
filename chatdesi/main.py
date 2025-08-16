@@ -67,7 +67,7 @@ def main():
             if not db_manager.test_connection():
                 st.error("❌ Unable to connect to MongoDB. Check credentials and IP Access List.")
                 return
-            st.success("✅ Connected to MongoDB")
+            st.toast("✅ Connected to MongoDB") # <-- CHANGE HERE
 
         selected_model_info = available_models[selected_model_key]
         provider = selected_model_info["provider"]
@@ -76,7 +76,7 @@ def main():
 
         with st.spinner(f"Initializing {selected_model_info['display_name']}..."):
             ai_client = SimpleModelClient(provider, api_key, model_name)
-            st.success(f"✅ Connected to {selected_model_info['display_name']}")
+            st.toast(f"✅ Connected to {selected_model_info['display_name']}") # <-- AND CHANGE HERE
 
         pdf_manager = PDFManager(db_manager)
         adql_manager = ADQLManager(db_manager)
