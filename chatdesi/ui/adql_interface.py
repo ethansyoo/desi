@@ -103,6 +103,7 @@ class PracticalADQLGenerator:
         self.ai_client = ai_client
         self.adql_manager = adql_manager
     
+    @st.cache_data(show_spinner=False)
     @ErrorHandler.handle_api_errors
     @PerformanceMonitor.time_function(show_in_sidebar=False)
     def generate_adql_query(self, user_input, available_columns, conversation_history=None, temperature=None, max_tokens=None):

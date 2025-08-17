@@ -14,12 +14,12 @@ except ImportError:
 
 class APIKeyManager:
     """API key management with live validation."""
-    
+
     def __init__(self):
         # Use session state to cache test results to avoid re-testing keys
         if 'tested_keys' not in st.session_state:
             st.session_state.tested_keys = {}
-    
+
     def test_openai_key(self, api_key: str) -> bool:
         """Test OpenAI API key with a minimal request."""
         try:
@@ -33,7 +33,7 @@ class APIKeyManager:
             return True
         except Exception:
             return False
-    
+
     def test_anthropic_key(self, api_key: str) -> bool:
         """Test Anthropic API key with a minimal request."""
         try:
@@ -47,12 +47,12 @@ class APIKeyManager:
             return True
         except Exception:
             return False
-    
+
     def get_user_api_keys(self) -> Dict[str, str]:
         """Get and test API keys from user input."""
         st.write("### 🔑 AI Model Configuration")
         api_keys = {}
-        
+
         openai_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
         if openai_key:
             # Check cache before making an API call
@@ -71,49 +71,49 @@ class APIKeyManager:
                 st.success("✅ Anthropic API key is valid.")
             else:
                 st.error("❌ Invalid Anthropic API key.")
-                
+
         return api_keys
-    
+
     def get_available_models(self, api_keys: Dict[str, str]) -> Dict[str, Dict[str, str]]:
         """Get available models based on working API keys."""
         from ..config import settings
         available_models = {}
         all_models = settings.model.available_models
-        
+
         if "openai" in api_keys:
             for k, v in all_models.items():
                 if v["provider"] == "openai":
                     available_models[k] = v
-        
+
         if "anthropic" in api_keys:
             for k, v in all_models.items():
                 if v["provider"] == "anthropic":
                     available_models[k] = v
-                    
+
         return available_models
-    
+
     def render_model_selector(self, available_models: Dict[str, Dict[str, str]]) -> Optional[str]:
         """Render model selection interface."""
         if not available_models:
             st.warning("⚠️ No working API keys found. Please enter valid API keys above.")
             return None
-        
+
         st.write("### 🎯 Model Selection")
-        
-        model_options = {f"{info['display_name']} ({info['provider']})": key 
+
+        model_options = {f"{info['display_name']} ({info['provider']})": key
                          for key, info in available_models.items()}
-        
+
         selected_display = st.selectbox("Choose AI Model:", options=list(model_options.keys()))
         return model_options[selected_display]
 
 
 class SimpleModelClient:
     """Simple client wrapper that works with any provider."""
-    
+
     def __init__(self, provider: str, api_key: str, model_name: str):
         self.provider = provider
         self.model_name = model_name
-        
+
         if provider == "openai":
             from openai import OpenAI
             self.client = OpenAI(api_key=api_key)
@@ -134,7 +134,7 @@ class SimpleModelClient:
                 content = chunk.choices[0].delta.content
                 if content:
                     yield content
-        
+
         elif self.provider == "anthropic":
             system_message = next((msg["content"] for msg in messages if msg["role"] == "system"), None)
             user_messages = [msg for msg in messages if msg["role"] != "system"]
@@ -149,7 +149,7 @@ class SimpleModelClient:
         """Generate chat completion, supporting both streaming and non-streaming."""
         if stream:
             return self._stream_completion(messages, max_tokens, temperature)
-        
+
         # Fallback for non-streaming requests
         if self.provider == "openai":
             response = self.client.chat.completions.create(

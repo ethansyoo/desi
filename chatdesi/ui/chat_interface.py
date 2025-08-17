@@ -44,6 +44,11 @@ class ChatInterface:
             if st.button("Clear Chat History"):
                 self.session.clear_chat_history()
                 st.rerun()
+            
+            # Render relevant documents if they exist in the session state
+            if "relevant_docs" in st.session_state and st.session_state["relevant_docs"]:
+                self.ui.render_relevant_documents_sidebar(st.session_state["relevant_docs"])
+
 
     def _handle_new_message(self, user_input: str, reference_toggle: bool, token_limit: int, temp_val: float):
         """Handle a new user message."""
@@ -56,6 +61,10 @@ class ChatInterface:
             with st.spinner("Finding relevant documents..."):
                 relevant_docs = self.pdf_manager.find_relevant_docs(user_input, top_k=3)
             st.session_state["relevant_docs"] = relevant_docs
+        else:
+            # Ensure docs are cleared if the toggle is off
+            st.session_state["relevant_docs"] = []
+
 
         with st.chat_message("assistant"):
             # Use st.write_stream to render the streaming response
@@ -79,17 +88,31 @@ class PracticalChatInterface(ChatInterface):
     @ErrorHandler.handle_api_errors
     @PerformanceMonitor.time_function(show_in_sidebar=False)
     def _generate_chat_response(self, user_input, relevant_docs, token_limit, temp_val):
-        """Generates a chat response, now supporting streaming."""
+        """Generates a chat response with a prompt that adapts to the context."""
+        
         context = ""
+        system_prompt = "You are a helpful astronomical research assistant."
+
+        # If relevant documents are found (implying reference_toggle is on),
+        # create a strict, context-aware prompt.
         if relevant_docs:
-            context_snippets = "\n\n".join([doc["text"] for doc in relevant_docs[:3]])
-            context = f"Relevant document context:\n\n{context_snippets}"
+            system_prompt = (
+                "You are an expert astronomical research assistant. Your task is to answer user questions "
+                "based *only* on the provided document context. Do not use any external knowledge. "
+                "If the answer is not found in the context, clearly state that the information is not available "
+                "in the provided documents."
+            )
+            context_snippets = "\n\n---\n\n".join(
+                [f"Source: {doc['metadata'].get('filename', 'Unknown')}\n\n{doc['text']}" for doc in relevant_docs]
+            )
+            context = f"\n\n## Document Context:\n\n{context_snippets}"
         
-        messages = []
-        if context:
-            messages.append({"role": "system", "content": context})
+        # The final prompt combines the base instruction with the context, if any.
+        final_system_prompt = system_prompt + context
         
-        # Include recent history
+        messages = [{"role": "system", "content": final_system_prompt}]
+        
+        # Include recent history to maintain conversation flow
         for msg in st.session_state.history[-6:]:
             messages.append(msg)
         

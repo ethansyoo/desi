@@ -114,26 +114,48 @@ class PDFManager:
             "chunks_added": chunks_added
         }
     
+    def _extract_filename_from_query(self, query: str) -> Optional[str]:
+        """Extract a potential filename from the user query."""
+        # Get all unique filenames from the database
+        all_filenames = self.collection.distinct("metadata.filename")
+        
+        # Find if any of the filenames are mentioned in the query
+        for fname in all_filenames:
+            if fname in query:
+                return fname
+        return None
+
     def find_relevant_docs(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """
-        Find documents relevant to the query using MongoDB Atlas Vector Search.
+        Find documents relevant to the query using a hybrid metadata/vector search.
         """
         top_k = top_k or settings.ui.default_top_k
-        
-        # Generate the embedding for the user's query
         query_embedding = self.embedding_model.embed_text(query).tolist()
         
-        # Define the aggregation pipeline for vector search
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": "default", # The name of your Atlas Search Index
-                    "path": "embedding",
-                    "queryVector": query_embedding,
-                    "numCandidates": 100, # Number of candidates to consider
-                    "limit": top_k # Number of results to return
+        # Define the core vector search stage
+        vector_search_stage = {
+            "$vectorSearch": {
+                "index": "default",
+                "path": "embedding",
+                "queryVector": query_embedding,
+                "numCandidates": 100,
+                "limit": top_k
+            }
+        }
+        
+        # Check if the query contains a specific filename
+        filename_filter_value = self._extract_filename_from_query(query)
+        if filename_filter_value:
+            # If a filename is found, pre-filter by it.
+            # This now uses a correct MQL filter with the '$eq' operator.
+            vector_search_stage["$vectorSearch"]["filter"] = {
+                "metadata.filename": {
+                    "$eq": filename_filter_value
                 }
-            },
+            }
+
+        pipeline = [
+            vector_search_stage,
             {
                 "$project": {
                     "_id": 0,
@@ -144,7 +166,6 @@ class PDFManager:
             }
         ]
         
-        # Execute the search
         relevant_docs = list(self.collection.aggregate(pipeline))
         return relevant_docs
     
