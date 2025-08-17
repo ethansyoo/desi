@@ -45,7 +45,6 @@ class ChatInterface:
                 self.session.clear_chat_history()
                 st.rerun()
             
-            # Render relevant documents if they exist in the session state
             if "relevant_docs" in st.session_state and st.session_state["relevant_docs"]:
                 self.ui.render_relevant_documents_sidebar(st.session_state["relevant_docs"])
 
@@ -59,22 +58,23 @@ class ChatInterface:
         relevant_docs = []
         if reference_toggle:
             with st.spinner("Finding relevant documents..."):
-                relevant_docs = self.pdf_manager.find_relevant_docs(user_input, top_k=3)
+                # Perform the initial search
+                initial_docs = self.pdf_manager.find_relevant_docs(user_input, top_k=5)
+                # Re-rank and potentially trigger a fallback search
+                relevant_docs = self.pdf_manager.rerank_and_fallback(user_input, initial_docs)
             st.session_state["relevant_docs"] = relevant_docs
         else:
-            # Ensure docs are cleared if the toggle is off
             st.session_state["relevant_docs"] = []
 
 
         with st.chat_message("assistant"):
-            # Use st.write_stream to render the streaming response
             response_generator = self._generate_chat_response(
                 user_input, relevant_docs, token_limit, temp_val
             )
             full_response = st.write_stream(response_generator)
 
         st.session_state.history.append({"role": "assistant", "content": full_response})
-        # No st.rerun() is needed here; st.write_stream handles the display updates.
+
 
     def _generate_chat_response(self, user_input, relevant_docs, token_limit, temp_val):
         """Placeholder for the actual response generation logic."""
@@ -90,29 +90,25 @@ class PracticalChatInterface(ChatInterface):
     def _generate_chat_response(self, user_input, relevant_docs, token_limit, temp_val):
         """Generates a chat response with a prompt that adapts to the context."""
         
+        system_prompt = "You are a helpful and creative astronomical research assistant. Your persona is knowledgeable and engaging."
         context = ""
-        system_prompt = "You are a helpful astronomical research assistant."
 
-        # If relevant documents are found (implying reference_toggle is on),
-        # create a strict, context-aware prompt.
         if relevant_docs:
             system_prompt = (
                 "You are an expert astronomical research assistant. Your task is to answer user questions "
-                "based *only* on the provided document context. Do not use any external knowledge. "
-                "If the answer is not found in the context, clearly state that the information is not available "
-                "in the provided documents."
+                "by prioritizing the provided document context. If the context is sufficient, base your answer on it. "
+                "If the context is insufficient, you may use your general knowledge but you must state that the provided documents did not contain the answer. "
+                "When possible, synthesize information to provide a comprehensive and creative summary."
             )
             context_snippets = "\n\n---\n\n".join(
-                [f"Source: {doc['metadata'].get('filename', 'Unknown')}\n\n{doc['text']}" for doc in relevant_docs]
+                [f"Source: {doc['metadata'].get('filename', 'Unknown')} (Chunk {doc['metadata'].get('chunk_index', 'N/A')})\n\n{doc['text']}" for doc in relevant_docs]
             )
             context = f"\n\n## Document Context:\n\n{context_snippets}"
         
-        # The final prompt combines the base instruction with the context, if any.
         final_system_prompt = system_prompt + context
         
         messages = [{"role": "system", "content": final_system_prompt}]
         
-        # Include recent history to maintain conversation flow
         for msg in st.session_state.history[-6:]:
             messages.append(msg)
         
@@ -120,5 +116,5 @@ class PracticalChatInterface(ChatInterface):
             messages=messages,
             max_tokens=token_limit,
             temperature=temp_val,
-            stream=True  # Enable streaming
+            stream=True
         )

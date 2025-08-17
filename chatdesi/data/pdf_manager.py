@@ -76,7 +76,6 @@ class PDFManager:
         """
         document_hash = self.compute_text_hash(text)
         
-        # Check for duplicates
         existing_document = self.collection.find_one({
             "metadata.document_hash": document_hash
         })
@@ -88,7 +87,6 @@ class PDFManager:
                 "chunks_added": 0
             }
         
-        # Create chunks and embeddings
         text_chunks = self.embedding_model.chunk_text(text)
         chunks_added = 0
         
@@ -101,7 +99,8 @@ class PDFManager:
                 "metadata": {
                     "filename": filename,
                     "document_hash": document_hash,
-                    "chunk_index": i
+                    "chunk_index": i,
+                    "total_chunks": len(text_chunks)
                 }
             }
             
@@ -115,103 +114,124 @@ class PDFManager:
         }
     
     def _extract_filename_from_query(self, query: str) -> Optional[str]:
-        """Extract a potential filename from the user query."""
-        # Get all unique filenames from the database
+        """
+        Finds a matching filename from the database based on a partial identifier in the query.
+        """
         all_filenames = self.collection.distinct("metadata.filename")
-        
-        # Find if any of the filenames are mentioned in the query
+        normalized_query = query.lower().strip()
+
         for fname in all_filenames:
-            if fname in query:
-                return fname
+            base_fname_match = re.match(r'([a-zA-Z0-9_]+_\d{4}_[a-zA-Z0-9_]+)', fname)
+            if base_fname_match:
+                base_fname = base_fname_match.group(1).lower().replace('.pdf', '')
+                if base_fname in normalized_query:
+                    return fname
         return None
 
-    def find_relevant_docs(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
+    def find_relevant_docs(self, query: str, top_k: int = None, force_vector_search: bool = False) -> List[Dict[str, Any]]:
         """
-        Find documents relevant to the query using a hybrid metadata/vector search.
+        Find documents relevant to the query, with an option to force a broad vector search.
         """
         top_k = top_k or settings.ui.default_top_k
-        query_embedding = self.embedding_model.embed_text(query).tolist()
         
-        # Define the core vector search stage
-        vector_search_stage = {
-            "$vectorSearch": {
-                "index": "default",
-                "path": "embedding",
-                "queryVector": query_embedding,
-                "numCandidates": 100,
-                "limit": top_k
-            }
-        }
+        filename_filter = self._extract_filename_from_query(query)
         
-        # Check if the query contains a specific filename
-        filename_filter_value = self._extract_filename_from_query(query)
-        if filename_filter_value:
-            # If a filename is found, pre-filter by it.
-            # This now uses a correct MQL filter with the '$eq' operator.
-            vector_search_stage["$vectorSearch"]["filter"] = {
-                "metadata.filename": {
-                    "$eq": filename_filter_value
-                }
-            }
+        if filename_filter and not force_vector_search:
+            # If a specific document is mentioned, fetch a representative sample
+            doc_info = self.collection.find_one(
+                {"metadata.filename": filename_filter},
+                sort=[("metadata.chunk_index", -1)]
+            )
+            
+            if not doc_info or "total_chunks" not in doc_info.get("metadata", {}):
+                 return list(self.collection.find(
+                     {"metadata.filename": filename_filter},
+                     {"_id": 0, "text": 1, "metadata": 1}
+                 ).limit(top_k))
 
+            total_chunks = doc_info['metadata']['total_chunks']
+            
+            indices = {0}
+            if total_chunks > 2:
+                indices.add(total_chunks // 2)
+            if total_chunks > 1:
+                indices.add(total_chunks - 1)
+            
+            pipeline = [
+                {"$match": {
+                    "metadata.filename": filename_filter,
+                    "metadata.chunk_index": {"$in": list(indices)}
+                }},
+                {"$sort": {"metadata.chunk_index": 1}},
+                {"$project": {"_id": 0, "text": 1, "metadata": 1}}
+            ]
+            return list(self.collection.aggregate(pipeline))
+
+        # For general queries or fallback searches, use vector search
+        query_embedding = self.embedding_model.embed_text(query).tolist()
         pipeline = [
-            vector_search_stage,
+            {
+                "$vectorSearch": {
+                    "index": "default",
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": 100,
+                    "limit": top_k
+                }
+            },
             {
                 "$project": {
                     "_id": 0,
                     "text": 1,
                     "metadata": 1,
-                    "similarity": { "$meta": "vectorSearchScore" }
+                    "similarity": {"$meta": "vectorSearchScore"}
                 }
             }
         ]
         
-        relevant_docs = list(self.collection.aggregate(pipeline))
-        return relevant_docs
-    
-    def highlight_keywords(self, text: str, query: str) -> str:
-        """Highlight keywords from query in text."""
-        terms = re.findall(r'\b\w+\b', query.lower())
-        for term in set(terms):
-            pattern = re.compile(rf'\b({re.escape(term)})\b', re.IGNORECASE)
-            text = pattern.sub(
-                r'<span style="background-color: #ffff00; font-weight: bold;">\1</span>',
-                text
-            )
-        return text
-    
+        return list(self.collection.aggregate(pipeline))
+
+    def rerank_and_fallback(self, query: str, initial_docs: List[Dict[str, Any]], similarity_threshold: float = 0.7) -> List[Dict[str, Any]]:
+        """
+        Re-ranks initial search results and triggers a fallback search if they are not relevant enough.
+        """
+        if not initial_docs:
+            return self.find_relevant_docs(query, force_vector_search=True)
+
+        # If the initial search returned documents by filename, they are likely relevant
+        if "similarity" not in initial_docs[0]:
+            return initial_docs
+
+        # Calculate the average similarity of the initial results
+        avg_similarity = np.mean([doc.get("similarity", 0) for doc in initial_docs])
+
+        # If the average similarity is low, trigger a broader fallback search
+        if avg_similarity < similarity_threshold:
+            return self.find_relevant_docs(query, force_vector_search=True)
+        
+        return initial_docs
+
     def get_document_stats(self) -> Dict[str, Any]:
         """Get statistics about stored documents."""
         total_chunks = self.collection.count_documents({})
         unique_docs = len(self.collection.distinct("metadata.document_hash"))
-        
-        # Get filenames
+
         filenames = self.collection.distinct("metadata.filename")
-        
+
         return {
             "total_chunks": total_chunks,
             "unique_documents": unique_docs,
             "filenames": filenames
         }
-    
+
     def delete_document(self, filename: str) -> Dict[str, Any]:
         """Delete all chunks of a document by filename."""
         result = self.collection.delete_many({"metadata.filename": filename})
-        
+
         return {
             "status": "success" if result.deleted_count > 0 else "not_found",
             "chunks_deleted": result.deleted_count,
             "message": f"Deleted {result.deleted_count} chunks for '{filename}'"
-        }
-    
-    def clear_all_documents(self) -> Dict[str, Any]:
-        """Clear all documents from the collection."""
-        result = self.collection.delete_many({})
-        
-        return {
-            "status": "success",
-            "chunks_deleted": result.deleted_count,
-            "message": f"Cleared {result.deleted_count} total chunks"
         }
 
 
@@ -221,21 +241,10 @@ class PDFProcessor:
     @staticmethod
     def extract_text_from_pdf(pdf_content: bytes) -> str:
         """Extract text from PDF content."""
-        import fitz  # PyMuPDF
-        
-        text = ""
-        with fitz.open(stream=pdf_content, filetype="pdf") as pdf:
-            for page in pdf:
-                text += page.get_text()
-        return text
-    
-    @staticmethod 
-    def extract_text_from_file(pdf_path: str) -> str:
-        """Extract text from PDF file path."""
         import fitz
         
         text = ""
-        with fitz.open(pdf_path) as pdf:
+        with fitz.open(stream=pdf_content, filetype="pdf") as pdf:
             for page in pdf:
                 text += page.get_text()
         return text
